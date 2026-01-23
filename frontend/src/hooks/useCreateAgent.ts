@@ -1,118 +1,135 @@
-import { useState, useEffect } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { useSteps, useToast } from '@chakra-ui/react'
 import { createAIAgent } from '@/utils/agent-creation'
 import { useWallets } from '@privy-io/react-auth'
-import { createPublicClient, http } from 'viem'
-import { mainnet } from 'viem/chains'
+
+type AgentMetadata = {
+  name: string
+  template: string
+  ensSubName: string
+  creator?: string
+  description: string
+  model: string
+  chain: string
+}
 
 export const useCreateAgent = () => {
   const { wallets } = useWallets()
+  const toast = useToast()
   const { activeStep, setActiveStep, isCompleteStep } = useSteps({ index: 0 })
+
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [agent, setAgent] = useState<any | null>(null)
+  const [agent, setAgent] = useState<unknown>(null)
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState(false)
   const [nameError, setNameError] = useState<string | null>(null)
-  const [ensName, setEnsName] = useState<any | string | null>('')
-  const [ensSubName, setSubName] = useState<any | string | null>('')
-  const [progress, setProgress] = useState<string>('')
-  const toast = useToast()
+  const [progress, setProgress] = useState('')
 
-  const embeddedWallet = wallets.find(
-    (wallet) => wallet.walletClientType !== 'privy',
+  const embeddedWallet = useMemo(
+    () => wallets.find(w => w.walletClientType !== 'privy'),
+    [wallets],
   )
-  const reset = () => {
+
+  const reset = useCallback(() => {
     setLoading(false)
     setSuccess(false)
     setProgress('')
-  }
+    setAgent(null)
+    setActiveStep(0)
+  }, [setActiveStep])
 
-  // useEffect(() => {
-  //   const ensLookup = async () => {
-  //     if (!wallets) {
-  //       return;
-  //     }
-  //     try {
-  //       const publicClient = createPublicClient({
-  //         chain: mainnet,
-  //         transport: http(),
-  //       });
-  //       if (!publicClient) {
-  //         return;
-  //       }
-  //       const _ensName = await publicClient.getEnsName({
-  //         address: embeddedWallet?.address! as `0x${string}`,
-  //       });
-  //       setEnsName(_ensName);
-  //     } catch (e) {
-  //       console.error(e);
-  //     }
-  //   };
-  //   ensLookup();
-  // }, [wallets, embeddedWallet]);
-
-  const handleSubmit = async () => {
-    if (activeStep === 1) {
-      if (name.length < 2) {
-        setNameError('Name must be at least 2 characters long')
-        return
-      } else {
-        setNameError(null)
-      }
-      setActiveStep(activeStep + 1)
-      setLoading(true)
-      const metadata = {
-        name,
-        template: '',
-        ensSubName: '',
-        creator: embeddedWallet?.address,
-        description,
-        model: 'gpt-3',
-        chain: 'Sepolia',
-      }
-      const provider = await embeddedWallet?.getEthereumProvider()
-
-      // console.log("my provider", embeddedWallet?.address);
-
-      // return;
-
-      try {
-        const result = await createAIAgent(
-          metadata,
-          embeddedWallet?.address!,
-          provider,
-          (progressMessage) => setProgress(progressMessage),
-        )
-
-        if (result) {
-          setAgent(result.agent)
-          setLoading(false)
-          setSuccess(true)
-          isCompleteStep(2)
-        }
-      } catch (e: any) {
-        // return;
-        // toast({
-        //   status: "error",
-        //   position: "top",
-        //   duration: 50000,
-        //   isClosable: true,
-        //   size: "large",
-        //   title: "Error",
-        //   description: e.message || progress || "Encoutered error",
-        // });
-        // setActiveStep(0);
-        // reset();
-      }
-    } else {
-      if (activeStep === 2) {
-        reset()
-      } else {
-        setActiveStep(activeStep + 1)
-      }
+  const validateStepOne = useCallback(() => {
+    if (name.trim().length < 2) {
+      setNameError('Name must be at least 2 characters long')
+      return false
     }
-  }
+    setNameError(null)
+    return true
+  }, [name])
+
+  const handleCreateAgent = useCallback(async () => {
+    if (!embeddedWallet?.address) {
+      toast({
+        status: 'error',
+        title: 'Wallet not connected',
+        position: 'top',
+      })
+      return
+    }
+
+    const metadata: AgentMetadata = {
+      name: name.trim(),
+      template: '',
+      ensSubName: '',
+      creator: embeddedWallet.address,
+      description,
+      model: 'gpt-3',
+      chain: 'Sepolia',
+    }
+
+    try {
+      setLoading(true)
+
+      const provider = await embeddedWallet.getEthereumProvider()
+
+      const result = await createAIAgent(
+        metadata,
+        embeddedWallet.address,
+        provider,
+        setProgress,
+      )
+
+      if (result?.agent) {
+        setAgent(result.agent)
+        setSuccess(true)
+        isCompleteStep(2)
+      }
+    } catch (error: any) {
+      toast({
+        status: 'error',
+        title: 'Agent creation failed',
+        description: error?.message || progress || 'Unknown error',
+        position: 'top',
+        isClosable: true,
+        duration: 8000,
+      })
+      reset()
+    } finally {
+      setLoading(false)
+    }
+  }, [
+    embeddedWallet,
+    name,
+    description,
+    progress,
+    toast,
+    isCompleteStep,
+    reset,
+  ])
+
+  const handleSubmit = useCallback(async () => {
+    switch (activeStep) {
+      case 1:
+        if (!validateStepOne()) return
+        setActiveStep(2)
+        await handleCreateAgent()
+        break
+
+      case 2:
+        reset()
+        break
+
+      default:
+        setActiveStep(prev => prev + 1)
+    }
+  }, [
+    activeStep,
+    setActiveStep,
+    validateStepOne,
+    handleCreateAgent,
+    reset,
+  ])
 
   return {
     name,
@@ -123,9 +140,6 @@ export const useCreateAgent = () => {
     loading,
     success,
     nameError,
-    ensName,
-    ensSubName,
-    setSubName,
     activeStep,
     setActiveStep,
     handleSubmit,
