@@ -2,9 +2,13 @@ import { NFTDeployed as NFTDeployedEvent } from "../generated/NFTFactory/NFTFact
 import { NFTDeployed } from "../generated/schema"
 
 export function handleNFTDeployed(event: NFTDeployedEvent): void {
-  let entity = new NFTDeployed(
-    event.transaction.hash.concatI32(event.logIndex.toI32())
-  )
+  let id = event.transaction.hash.toHex() + "-" + event.logIndex.toString()
+  let entity = NFTDeployed.load(id)
+
+  if (entity == null) {
+    entity = new NFTDeployed(id)
+  }
+
   entity.nftAddress = event.params.nftAddress
   entity.owner = event.params.owner
 

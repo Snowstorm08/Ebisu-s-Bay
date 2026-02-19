@@ -3,6 +3,8 @@ import React, {
   useContext,
   useState,
   useEffect,
+  useMemo,
+  useCallback,
   ReactNode,
 } from 'react'
 import { usePrivy, useWallets } from '@privy-io/react-auth'
@@ -26,12 +28,12 @@ import AgentTemplate from '@/contracts/abi/Agent.json'
 
 interface GlobalContextType {
   isCollapsed: boolean
-  setIsCollapsed: (isCollapsed: boolean) => void
+  setIsCollapsed: (v: boolean) => void
   index: number
-  setIndex: (index: number) => void
-  nftData: null | any[] | any
-  agents: null | any[] | any
-  setNftData: (index: null | any[] | any) => void
+  setIndex: (v: number) => void
+  nftData: any[] | null
+  agents: any[] | null
+  setNftData: (v: any[] | null) => void
   loadingMarket: boolean
   smartAccountClient: () => Promise<BiconomySmartAccountV2 | undefined>
   isOpen: boolean
@@ -41,129 +43,119 @@ interface GlobalContextType {
 
 const GlobalContext = createContext<GlobalContextType | undefined>(undefined)
 
-export const GlobalProvider: React.FC<{ children: ReactNode }> = ({
-  children,
-}) => {
-  const [isCollapsed, setIsCollapsed] = useState<boolean>(false)
-  const [index, setIndex] = useState<number>(0)
-  const [nftData, setNftData] = useState<null | any[] | any>(null)
-  const [agents, setAgents] = useState<null | any[] | any>(null)
-  const { ready, authenticated, login } = usePrivy()
-  const { isOpen, onOpen, onClose } = useDisclosure()
+export const GlobalProvider = ({ children }: { children: ReactNode }) => {
+  const [isCollapsed, setIsCollapsed] = useState(false)
+  const [index, setIndex] = useState(0)
+  const [nftData, setNftData] = useState<any[] | null>(null)
+  const [agents, setAgents] = useState<any[] | null>(null)
+
+  const { authenticated } = usePrivy()
   const { wallets } = useWallets()
-  const embeddedWallet = wallets.find(
-    (wallet) => wallet.walletClientType !== 'privy',
+  const { isOpen, onOpen, onClose } = useDisclosure()
+
+  const embeddedWallet = useMemo(
+    () => wallets.find((w) => w.walletClientType !== 'privy'),
+    [wallets]
   )
 
-  const {
-    loading: loadingMarket,
-    error,
-    data,
-  } = useQuery(GET_NFT_DEPLOYED, {
+  const { loading: loadingMarket, data } = useQuery(GET_NFT_DEPLOYED, {
     variables: { first: 5 },
     client,
   })
 
+  /* ================= NFT FETCH ================= */
+
   useEffect(() => {
+    if (!data?.nftdeployeds) return
+
     const fetchNFTDetails = async () => {
-      let metadata: any
-      const detailedData = await Promise.all(
+      const detailed = await Promise.all(
         data.nftdeployeds.map(async (nft: any) => {
-          const details = await getDetailsFromNFTContract(
-            (nft as any).nftAddress,
-          )
-          // console.log(details);
-          if (!details) {
-            return null
-          }
+          const details = await getDetailsFromNFTContract(nft.nftAddress)
+          if (!details) return null
+
           if (details.cid) {
-            metadata = await fetchContent(details.cid as string)
+            const metadata = await fetchContent(details.cid)
             return { ...nft, ...details, metadata }
-          } else {
-            return { ...nft, ...details }
           }
-        }),
+
+          return { ...nft, ...details }
+        })
       )
 
-      console.log(await data.nftdeployeds)
-      if (detailedData) {
-        // console.log("details data", detailedData);
-        // setNftData(detailedData);
-        setNftData(detailedData.filter((item) => item !== null))
-      }
+      setNftData(detailed.filter(Boolean))
     }
 
-    if (data && !nftData) {
-      fetchNFTDetails()
-    }
+    fetchNFTDetails()
+  }, [data])
 
-    if (nftData) {
-      console.log('nft data', nftData)
-    }
-  }, [data, nftData])
+  /* ================= AGENT FETCH ================= */
 
   useEffect(() => {
+    if (!embeddedWallet) return
+
     const fetchAgents = async () => {
       try {
-        const factoryContract = process.env
+        const factoryAddress = process.env
           .NEXT_PUBLIC_AGENTFACTORY_ADDRESS as `0x${string}`
-        const agentFactory = await callReadContract(
-          factoryContract,
+
+        const agentsRaw = await callReadContract(
+          factoryAddress,
           'getAgentsByCreator',
           AgentFactory.abi,
-          [embeddedWallet?.address as `0x${string}`],
+          [embeddedWallet.address as `0x${string}`]
         )
 
-        if (agentFactory) {
-          const agentPromises = agentFactory.map(async (agent: any) => {
-            const agentAddress = agent.agentAddress
-            const agentInfo = await callReadContract(
-              agentAddress,
+        if (!agentsRaw) return
+
+        const resolved = await Promise.all(
+          agentsRaw.map(async (agent: any) => {
+            const info = await callReadContract(
+              agent.agentAddress,
               'getIndexInfo',
               AgentTemplate.abi,
-              [],
+              []
             )
 
-            if (agentInfo) {
-              const agentMetaData = await fetchContent(agent.cid)
-              return {
-                ...agent,
-                metadata: agentMetaData ?? null,
-                count: Number(agentInfo[2]),
-                version: Number(agentInfo[1]),
-              }
+            if (!info) return null
+
+            const metadata = await fetchContent(agent.cid)
+
+            return {
+              ...agent,
+              metadata: metadata ?? null,
+              count: Number(info[2]),
+              version: Number(info[1]),
             }
-
-            return null
           })
+        )
 
-          const resolvedAgents = await Promise.all(agentPromises)
-          setAgents(resolvedAgents.filter((agent) => agent !== null))
-        }
-      } catch (error) {
-        console.error('Error fetching agents:', error)
+        setAgents(resolved.filter(Boolean))
+      } catch (err) {
+        console.error('Error fetching agents:', err)
       }
     }
 
-    if (embeddedWallet && !agents) {
-      fetchAgents()
-    }
-  }, [embeddedWallet, agents])
+    fetchAgents()
+  }, [embeddedWallet])
 
-  useEffect(() => {
-    if (agents) {
-      console.log('loaded agents', agents)
-    }
-  }, [agents])
+  /* ================= WALLET ================= */
 
-  async function smartAccountClient() {
-    if (!authenticated) {
-      console.error('not authenticated')
-      return
-    }
+  const walletClient = useCallback(async () => {
+    if (!embeddedWallet) return
+
+    await embeddedWallet.switchChain(sepolia.id)
+    return await embeddedWallet.getEthersProvider()
+  }, [embeddedWallet])
+
+  const smartAccountClient = useCallback(async () => {
+    if (!authenticated) return
+
     const provider = await walletClient()
-    return await createSmartAccountClient({
-      signer: provider?.getSigner() as LightSigner,
+    if (!provider) return
+
+    return createSmartAccountClient({
+      signer: provider.getSigner() as LightSigner,
       chainId: sepolia.id,
       bundlerUrl: `https://bundler.biconomy.io/api/v2/${sepolia.id}/${
         process.env.NEXT_PUBLIC_BUNDLER_ID as string
@@ -171,48 +163,49 @@ export const GlobalProvider: React.FC<{ children: ReactNode }> = ({
       biconomyPaymasterApiKey: process.env.NEXT_PUBLIC_PAYMASTER_KEY,
       rpcUrl: 'https://rpc.sepolia.org',
     })
-  }
+  }, [authenticated, walletClient])
 
-  async function walletClient() {
-    const embeddedWallet = wallets.find(
-      (wallet) => wallet.walletClientType !== 'privy',
-    )
+  /* ================= MEMO CONTEXT ================= */
 
-    if (!embeddedWallet) {
-      console.log('no embedded wallet wound')
-      return
-    }
-    await embeddedWallet.switchChain(sepolia.id)
-    const provider = await embeddedWallet.getEthersProvider()
-    return provider
-  }
+  const value = useMemo(
+    () => ({
+      isCollapsed,
+      setIsCollapsed,
+      index,
+      setIndex,
+      nftData,
+      setNftData,
+      loadingMarket,
+      smartAccountClient,
+      isOpen,
+      onOpen,
+      onClose,
+      agents,
+    }),
+    [
+      isCollapsed,
+      index,
+      nftData,
+      loadingMarket,
+      smartAccountClient,
+      isOpen,
+      onOpen,
+      onClose,
+      agents,
+    ]
+  )
 
   return (
-    <GlobalContext.Provider
-      value={{
-        isCollapsed,
-        setIsCollapsed,
-        index,
-        setIndex,
-        nftData,
-        loadingMarket,
-        setNftData,
-        smartAccountClient,
-        isOpen,
-        onOpen,
-        onClose,
-        agents,
-      }}
-    >
+    <GlobalContext.Provider value={value}>
       {children}
     </GlobalContext.Provider>
   )
 }
 
 export const useGlobalContext = () => {
-  const context = useContext(GlobalContext)
-  if (context === undefined) {
-    throw new Error('useGlobalContext must be used within a GlobalProvider')
+  const ctx = useContext(GlobalContext)
+  if (!ctx) {
+    throw new Error('useGlobalContext must be used within GlobalProvider')
   }
-  return context
+  return ctx
 }
