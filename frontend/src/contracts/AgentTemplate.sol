@@ -13,47 +13,73 @@ contract AgentTemplate {
     Index private index;
     bool private indexExists;
 
-    // Function to create a new index catalog
-    function createIndex(string memory indexName) external {
-        require(!indexExists, "Index already exists");
+    // Custom Errors (cheaper than require strings)
+    error IndexAlreadyExists();
+    error IndexDoesNotExist();
+    error EmptyInput();
+    error DocumentAlreadyExists();
+
+    // Events for off-chain tracking
+    event IndexCreated(string name, uint256 version);
+    event DocumentAdded(string uri, string cid);
+
+    // Create a new index
+    function createIndex(string calldata indexName) external {
+        if (indexExists) revert IndexAlreadyExists();
+        if (bytes(indexName).length == 0) revert EmptyInput();
+
         index.name = indexName;
         index.version = 1;
         indexExists = true;
+
+        emit IndexCreated(indexName, 1);
     }
 
-    // Function to add a new document CID to the index
-    function addDocument(string memory uri, string memory documentCID)
-        external
-    {
-        require(indexExists, "Index does not exist");
-        index.count++;
+    // Add document to index
+    function addDocument(string calldata uri, string calldata documentCID) external {
+        if (!indexExists) revert IndexDoesNotExist();
+        if (bytes(uri).length == 0 || bytes(documentCID).length == 0) {
+            revert EmptyInput();
+        }
+
+        // Prevent overwrite (optional safety)
+        if (bytes(index.uriToId[uri]).length != 0) {
+            revert DocumentAlreadyExists();
+        }
+
+        unchecked {
+            index.count++;
+        }
+
         index.uriToId[uri] = documentCID;
         index.idToUri[documentCID] = uri;
+
+        emit DocumentAdded(uri, documentCID);
     }
 
-    // Function to retrieve document CID by URI
-    function getURIByDocumentCID(string memory cid)
-        public
+    // Get URI from CID
+    function getURIByDocumentCID(string calldata cid)
+        external
         view
         returns (string memory)
     {
-        require(indexExists, "Index does not exist");
+        if (!indexExists) revert IndexDoesNotExist();
         return index.idToUri[cid];
     }
 
-    // Function to retrieve  URI by document CID
-    function getDocumentCIDByURI(string memory uri)
-        public
+    // Get CID from URI
+    function getDocumentCIDByURI(string calldata uri)
+        external
         view
         returns (string memory)
     {
-        require(indexExists, "Index does not exist");
+        if (!indexExists) revert IndexDoesNotExist();
         return index.uriToId[uri];
     }
 
-    // Function to retrieve the index name, version, and count
+    // Get index metadata
     function getIndexInfo()
-        public
+        external
         view
         returns (
             string memory name,
@@ -61,7 +87,7 @@ contract AgentTemplate {
             uint256 count
         )
     {
-        require(indexExists, "Index does not exist");
+        if (!indexExists) revert IndexDoesNotExist();
         return (index.name, index.version, index.count);
     }
 }
